@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { BsModsManagerService } from "renderer/services/bs-mods-manager.service";
 import { BSVersion } from "shared/bs-version.interface";
 import { Mod } from "shared/models/mods/mod.interface";
@@ -10,7 +10,7 @@ import BeatWaitingImg from "../../../../../../assets/images/apngs/beat-waiting.p
 import BeatConflictImg from "../../../../../../assets/images/apngs/beat-conflict.png";
 import { useObservable } from "renderer/hooks/use-observable.hook";
 import { skip, filter } from "rxjs/operators";
-import { Subscription, lastValueFrom } from "rxjs";
+import { Subscription, lastValueFrom, noop } from "rxjs";
 import { useTranslation } from "renderer/hooks/use-translation.hook";
 import { LinkOpenerService } from "renderer/services/link-opener.service";
 import { useInView } from "framer-motion";
@@ -100,28 +100,33 @@ export function ModsSlide({ version, onDisclamerDecline }: { version: BSVersion;
         });
     };
 
-    const loadMods = () => {
+    const loadMods = (): Promise<void> => {
         if (os.isOffline) {
-            return;
+            return Promise.resolve();
         }
 
-        Promise.all([
-            lastValueFrom(modsManager.getAvailableMods(version)),
-            lastValueFrom(modsManager.getInstalledMods(version))
-        ]).then(([available, installed]) => {
+        const promise = async () => {
+            const available = await lastValueFrom(modsManager.getAvailableMods(version));
+            const installed = await lastValueFrom(modsManager.getInstalledMods(version));
+            return [available, installed];
+        }
+
+        return promise().then(([available, installed]) => {
             const defaultMods = configService.get<string[]>("default_mods" as DefaultConfigKey);
-            setModsAvailable(modsToCategoryMap(available));
-            setModsSelected(available.filter(m => m.required || defaultMods.some(d => m.name.toLowerCase() === d.toLowerCase()) || installed.some(i => m.name === i.name)));
-            setModsInstalled(modsToCategoryMap(installed));
+            setModsAvailable(() => modsToCategoryMap(available));
+            setModsSelected(() => available.filter(m => m.required || defaultMods.some(d => m.name.toLowerCase() === d.toLowerCase()) || installed.some(i => m.name === i.name)));
+            setModsInstalled(() => modsToCategoryMap(installed));
         });
     };
 
     useEffect(() => {
         const subs: Subscription[] = [];
 
-        if (isVisible && isOnline) {
-            
-            (async () => {
+        if(!isVisible || !isOnline){
+            return noop();
+        }
+
+        (async () => {
                 if (configService.get<boolean>(ACCEPTED_DISCLAIMER_KEY)) {
                     return true;
                 }
@@ -134,25 +139,22 @@ export function ModsSlide({ version, onDisclamerDecline }: { version: BSVersion;
                 }
 
                 return haveAccepted;
-            })().then(canLoad => {
-                if (!canLoad) {
-                    return onDisclamerDecline?.();
-                }
-                
-                loadMods();
+        })().then(canLoad => {
+            if (!canLoad) {
+                return onDisclamerDecline?.();
+            }
 
-                subs.push(
-                    modsManager.isUninstalling$
-                        .pipe(
-                            skip(1),
-                            filter(uninstalling => !uninstalling)
-                        )
-                        .subscribe(() => {
-                            loadMods();
-                        })
-                );
-            });
-        }
+            loadMods();
+
+            subs.push(
+                modsManager.isUninstalling$.pipe(
+                    skip(1),
+                    filter(uninstalling => !uninstalling)
+                ).subscribe(() => {
+                    loadMods();
+                })
+            );
+        });
 
         return () => {
             setMoreInfoMod(null);
@@ -176,7 +178,11 @@ export function ModsSlide({ version, onDisclamerDecline }: { version: BSVersion;
             return <ModStatus text="pages.version-viewer.mods.loading-mods" image={BeatWaitingImg} spin />;
         }
         if (!modsAvailable.size) {
-            return <ModStatus text="pages.version-viewer.mods.mods-not-available" image={BeatConflictImg} />;
+            return (
+                <ModStatus text="pages.version-viewer.mods.mods-not-available" image={BeatConflictImg}>
+                    <span className="text-xl tracking-wide font-bold font-mono mt-1">({version.BSVersion})</span>
+                </ModStatus>
+            );
         }
         return (
             <>
@@ -200,13 +206,14 @@ export function ModsSlide({ version, onDisclamerDecline }: { version: BSVersion;
     );
 }
 
-function ModStatus({ text, image, spin = false }: { text: string; image: string; spin?: boolean }) {
+function ModStatus({ text, image, spin = false, children }: { text: string; image: string; spin?: boolean, children?: ReactNode}) {
     const t = useTranslation();
 
     return (
         <div className="w-full h-full flex flex-col items-center justify-center text-gray-800 dark:text-gray-200">
             <img className={`w-32 h-32 ${spin ? "spin-loading" : ""}`} src={image} alt=" " />
-            <span className="text-xl mt-3 h-0 italic">{t(text)}</span>
+            <span className="text-xl mt-3 italic">{t(text)}</span>
+            {children}
         </div>
     );
 }
